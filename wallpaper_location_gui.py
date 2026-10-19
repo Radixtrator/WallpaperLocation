@@ -50,7 +50,10 @@ def describe_rule(rule):
             parts.append(f"{label}: {join_list(rule[key])}")
     if "lat" in rule and "lon" in rule:
         parts.append(f"Within {rule.get('radius_km', 5):g} km of {rule['lat']:.4f}, {rule['lon']:.4f}")
-    return " · ".join(parts) or "No conditions"
+    desc = " · ".join(parts) or "No conditions"
+    if rule.get("slideshow"):
+        desc += f"\nSlideshow, every {rule['slideshow']:g} min"
+    return desc
 
 
 def first_image(path_str):
@@ -124,6 +127,39 @@ def flat_button(icon, tooltip, on_click):
     return btn
 
 
+class SlideshowRow(Adw.ExpanderRow):
+    """Slideshow on/off, interval and shuffle; only usable when the wallpaper is a folder."""
+
+    def __init__(self, rule, on_change=None):
+        on = bool(rule.get("slideshow"))
+        super().__init__(title="Slideshow", show_enable_switch=True,
+                         enable_expansion=on, expanded=on)
+        self.minutes_row = Adw.SpinRow.new_with_range(1, 1440, 5)
+        self.minutes_row.set_title("Change every (minutes)")
+        self.minutes_row.set_value(rule.get("slideshow") or 30)
+        self.shuffle_row = Adw.SwitchRow(title="Shuffle", active=rule.get("shuffle", True))
+        self.add_row(self.minutes_row)
+        self.add_row(self.shuffle_row)
+        if on_change:
+            self.connect("notify::enable-expansion", lambda *_: on_change())
+            self.minutes_row.connect("notify::value", lambda *_: on_change())
+            self.shuffle_row.connect("notify::active", lambda *_: on_change())
+
+    def set_folder(self, path_str):
+        is_dir = bool(path_str) and Path(path_str).expanduser().is_dir()
+        self.set_sensitive(is_dir)
+        self.set_subtitle("Cycle through every image in the folder" if is_dir
+                          else "Choose a folder to use a slideshow")
+
+    def values(self):
+        if not (self.get_sensitive() and self.get_enable_expansion()):
+            return {}
+        vals = {"slideshow": int(self.minutes_row.get_value())}
+        if not self.shuffle_row.get_active():
+            vals["shuffle"] = False
+        return vals
+
+
 def systemctl(*args):
     try:
         return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=10)
@@ -195,11 +231,13 @@ class RuleDialog(Adw.Dialog):
         self.wall_row = Adw.ActionRow(title="Image or folder", subtitle_lines=2, use_markup=False)
         self.wall_row.add_suffix(flat_button("image-x-generic-symbolic", "Choose image",
                                              lambda: choose_wallpaper(self.get_root(), False, self._set_wall)))
-        self.wall_row.add_suffix(flat_button("folder-symbolic", "Choose folder (random image)",
+        self.wall_row.add_suffix(flat_button("folder-symbolic", "Choose folder (random image or slideshow)",
                                              lambda: choose_wallpaper(self.get_root(), True, self._set_wall)))
         self.thumb = None
+        self.slideshow_row = SlideshowRow(self.rule)
         self._set_wall(self.rule.get("wallpaper"))
         g.add(self.wall_row)
+        g.add(self.slideshow_row)
         self.fit_row = Adw.ComboRow(title="Fit",
                                     model=Gtk.StringList.new(["Use global setting"] + FIT_OPTIONS))
         opt = self.rule.get("options")
@@ -230,6 +268,7 @@ class RuleDialog(Adw.Dialog):
             self.wall_row.remove(self.thumb)
         self.thumb = thumbnail(path)
         self.wall_row.add_prefix(self.thumb)
+        self.slideshow_row.set_folder(path)
 
     def _fail(self, msg, row=None):
         if row:
@@ -262,6 +301,7 @@ class RuleDialog(Adw.Dialog):
         if not self.rule.get("wallpaper"):
             return self._fail("Choose a wallpaper")
         rule["wallpaper"] = self.rule["wallpaper"]
+        rule.update(self.slideshow_row.values())
         if self.fit_row.get_selected() > 0:
             rule["options"] = FIT_OPTIONS[self.fit_row.get_selected() - 1]
         self.on_save(rule)
@@ -325,13 +365,15 @@ class Window(Adw.ApplicationWindow):
             "image-x-generic-symbolic", "Choose image",
             lambda: choose_wallpaper(self, False, self.set_default)))
         self.default_row.add_suffix(flat_button(
-            "folder-symbolic", "Choose folder (random image)",
+            "folder-symbolic", "Choose folder (random image or slideshow)",
             lambda: choose_wallpaper(self, True, self.set_default)))
         self.default_row.add_suffix(flat_button(
             "edit-clear-symbolic", "Don't change wallpaper when nowhere matches",
             lambda: self.set_default(None)))
         self.default_thumb = None
         g.add(self.default_row)
+        self.default_slideshow = SlideshowRow(self.cfg.get("default", {}), self._on_default_slideshow)
+        g.add(self.default_slideshow)
         page.add(g)
 
         # Options
@@ -461,7 +503,7 @@ class Window(Adw.ApplicationWindow):
 
     def set_default(self, path, save=True):
         if path:
-            self.cfg["default"] = {"wallpaper": path}
+            self.cfg.setdefault("default", {})["wallpaper"] = path
         else:
             self.cfg.pop("default", None)
         self.default_row.set_subtitle(path or "None — keep the current wallpaper")
@@ -469,9 +511,18 @@ class Window(Adw.ApplicationWindow):
             self.default_row.remove(self.default_thumb)
         self.default_thumb = thumbnail(path)
         self.default_row.add_prefix(self.default_thumb)
+        self.default_slideshow.set_folder(path)
         if save:
-            self.save()
+            self._on_default_slideshow()
             self.update_match()
+
+    def _on_default_slideshow(self):
+        default = self.cfg.get("default")
+        if default:
+            for key in ("slideshow", "shuffle"):
+                default.pop(key, None)
+            default.update(self.default_slideshow.values())
+        self.save()
 
     # -- options --
 

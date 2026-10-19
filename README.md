@@ -13,6 +13,7 @@ A small GTK4 / libadwaita app plus a background timer. It's written in Python, u
 
 - **Match places by** Wi-Fi network name, city, region, country, or distance from a point on the map. Combine them however you like.
 - **An image or a folder per place.** With a folder, a random image is picked from it, including its subfolders.
+- **Slideshows.** Turn a folder into a slideshow that changes image every few minutes, shuffled or in name order. GNOME plays it natively with a cross-fade, so it keeps going between location checks.
 - **First match wins.** Reorder places to set priority, and set a fallback wallpaper for everywhere else, or leave it unset to keep your current wallpaper.
 - **Runs in the background.** A systemd user timer checks every 10 minutes and at login. It only changes the wallpaper when you've moved to a different place.
 - **One-click helpers** fill in your current Wi-Fi, city or coordinates while you edit a place.
@@ -70,7 +71,7 @@ From a terminal:
 ```bash
 wallpaper-location where          # print what was detected
 wallpaper-location run            # apply if the matched place changed
-wallpaper-location run --force    # apply even if it didn't (re-rolls folder picks)
+wallpaper-location run --force    # apply even if it didn't (re-rolls folder picks / reshuffles slideshows)
 wallpaper-location run --dry-run  # show what would happen
 ```
 
@@ -89,6 +90,8 @@ ip_lookup = true
 name = "home"
 ssid = "MyHomeWifi"       # or a list: ["Wifi-A", "Wifi-B"]
 wallpaper = "~/Pictures/Wallpapers/home"   # file or folder
+slideshow = 30            # folder only: new image every 30 minutes
+shuffle = true            # default; false = name order
 
 [[rule]]
 name = "office"
@@ -110,6 +113,8 @@ wallpaper = "/usr/share/backgrounds/gnome"
 If a place has several conditions, **all** of them must match. Text matches ignore upper/lower case.
 
 The wallpaper is set for both light and dark style (`picture-uri` and `picture-uri-dark`).
+
+Slideshows are written as GNOME background XML files in `~/.local/state/wallpaper-location/` and replaced each time the wallpaper is applied. The folder is read when the place is applied, so images added later are picked up next time you move there or click **Apply Now**.
 
 ## Troubleshooting
 

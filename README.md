@@ -5,8 +5,8 @@ Change your GNOME wallpaper automatically based on where you are: one wallpaper 
 A small GTK4 / libadwaita app plus a background timer. It's written in Python, uses only the standard library and PyGObject, and was built and tested on CachyOS with GNOME. It should work on any recent GNOME desktop.
 
 <p align="center">
-  <img src="screenshots/screenshot-main.png" width="420" alt="Main window: current location, a list of places with wallpaper previews, and options">
-  <img src="screenshots/screenshot-edit.png" width="420" alt="Editing a place: Wi-Fi, city, country and distance-based conditions">
+  <img src="screenshots/screenshot-main.png" width="420" alt="Main window: current location with a Shuffle Slideshow Now button, a list of places with wallpaper previews, the fallback wallpaper, and options">
+  <img src="screenshots/screenshot-edit.png" width="420" alt="Editing a place: a wallpaper folder set to a 30-minute shuffled slideshow, then the Wi-Fi, city and country conditions">
 </p>
 
 ## Features
@@ -15,7 +15,7 @@ A small GTK4 / libadwaita app plus a background timer. It's written in Python, u
 - **An image or a folder per place.** With a folder, a random image is picked from it, including its subfolders.
 - **Slideshows.** Turn a folder into a slideshow and choose how long each image stays, in seconds, minutes or hours. Shuffle shows every image once per round, in a new random order each round. **Shuffle Slideshow Now** makes a new order straight away. GNOME plays the slideshow itself with a cross-fade, so it keeps going between location checks.
 - **First match wins.** Reorder places to set priority, and set a fallback wallpaper for everywhere else, or leave it unset to keep your current wallpaper.
-- **Tray icon** with *Next Wallpaper*, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
+- **Tray icon** with *Next Wallpaper*, when the wallpaper last changed, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
 - **Runs in the background.** It checks a few seconds after you wake the laptop or join a different network, and every 10 minutes and at login as a backup. It only changes the wallpaper when you've moved to a different place, so open the lid somewhere new and the right wallpaper is usually up by the time you've unlocked.
 - **One-click helpers** fill in your current Wi-Fi, city or coordinates while you edit a place.
 - **CLI too.** `wallpaper-location where` / `run` work without the GUI.
@@ -68,13 +68,14 @@ To remove everything except your config:
 
 ## Usage
 
-Open **Wallpaper Location**, click **+** to add a place, choose what it matches on and pick a wallpaper. Changes are saved straight away. Click **Apply Now** to switch immediately; otherwise the background timer picks the change up within 10 minutes.
+Open **Wallpaper Location**, click **+** to add a place, pick a wallpaper and choose what it matches on. If you pick a folder, turn on **Slideshow** right below it and set how long each image stays. Changes are saved straight away. Click **Apply Now** to switch immediately; otherwise the background timer picks the change up within 10 minutes.
 
 ### Tray icon
 
 | Menu item | What it does |
 | --- | --- |
 | **Current: *name*** | Opens the image on screen. **Show in Files** opens its folder. |
+| **Last changed** | Date and time the image on screen last changed, including slideshow changes GNOME made on its own. |
 | **Next Wallpaper** | Skips to the next image in a slideshow, or picks another random image from a folder. Middle-clicking the icon does the same. |
 | **Pause Slideshow** | Keeps the current image on screen. Unpausing carries on from that image. The pause stays on when you move to another place, until you turn it off. |
 | **Place** | *Automatic* chooses by location. Choosing a place keeps it, and the background timer, on that place wherever you are, until you switch back to *Automatic*. The app shows this too and has **Pick by Location Again**. |

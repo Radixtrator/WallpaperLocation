@@ -167,6 +167,10 @@ class SlideshowRow(Adw.ExpanderRow):
             subtitle="Random order, every image once per round, reshuffled each round")
         for row in (self.amount_row, self.unit_row, self.shuffle_row):
             self.add_row(row)
+        self.is_dir = False
+        for obj, prop in ((self, "enable-expansion"), (self.amount_row, "value"),
+                          (self.unit_row, "selected"), (self.shuffle_row, "active")):
+            obj.connect(f"notify::{prop}", lambda *_: self._update_subtitle())
         if on_change:
             self.connect("notify::enable-expansion", lambda *_: on_change())
             self.amount_row.connect("notify::value", lambda *_: on_change())
@@ -174,10 +178,20 @@ class SlideshowRow(Adw.ExpanderRow):
             self.shuffle_row.connect("notify::active", lambda *_: on_change())
 
     def set_folder(self, path_str):
-        is_dir = bool(path_str) and Path(path_str).expanduser().is_dir()
-        self.set_sensitive(is_dir)
-        self.set_subtitle("Cycle through every image in the folder" if is_dir
-                          else "Choose a folder to use a slideshow")
+        self.is_dir = bool(path_str) and Path(path_str).expanduser().is_dir()
+        self.set_sensitive(self.is_dir)
+        self._update_subtitle()
+
+    def _update_subtitle(self):
+        if not self.is_dir:
+            text = "Choose a folder to use a slideshow"
+        elif not self.get_enable_expansion():
+            text = "Off — one random image from the folder. Turn on to cycle through them all"
+        else:
+            secs = int(self.amount_row.get_value()) * DURATION_UNITS[self.unit_row.get_selected()][1]
+            order = "shuffled" if self.shuffle_row.get_active() else "in name order"
+            text = f"{format_duration(max(secs, core.MIN_SLIDE_SECS))} per image, {order}"
+        self.set_subtitle(text)
 
     def values(self):
         if not (self.get_sensitive() and self.get_enable_expansion()):
@@ -254,6 +268,24 @@ class RuleDialog(Adw.Dialog):
         g.add(self.name_row)
         page.add(g)
 
+        g = Adw.PreferencesGroup(title="Wallpaper")
+        self.wall_row = Adw.ActionRow(title="Image or folder", subtitle_lines=2, use_markup=False)
+        self.wall_row.add_suffix(flat_button("image-x-generic-symbolic", "Choose image",
+                                             lambda: choose_wallpaper(self.get_root(), False, self._set_wall)))
+        self.wall_row.add_suffix(flat_button("folder-symbolic", "Choose folder (random image or slideshow)",
+                                             lambda: choose_wallpaper(self.get_root(), True, self._set_wall)))
+        self.thumb = None
+        self.slideshow_row = SlideshowRow(self.rule)
+        self._set_wall(self.rule.get("wallpaper"))
+        g.add(self.wall_row)
+        g.add(self.slideshow_row)
+        self.fit_row = Adw.ComboRow(title="Fit",
+                                    model=Gtk.StringList.new(["Use global setting"] + FIT_OPTIONS))
+        opt = self.rule.get("options")
+        self.fit_row.set_selected(FIT_OPTIONS.index(opt) + 1 if opt in FIT_OPTIONS else 0)
+        g.add(self.fit_row)
+        page.add(g)
+
         g = Adw.PreferencesGroup(
             title="Match When",
             description="Every filled-in condition must hold. Separate multiple values with commas.")
@@ -279,24 +311,6 @@ class RuleDialog(Adw.Dialog):
         for row in (self.lat_row, self.lon_row, self.radius_row, here):
             self.near_row.add_row(row)
         g.add(self.near_row)
-        page.add(g)
-
-        g = Adw.PreferencesGroup(title="Wallpaper")
-        self.wall_row = Adw.ActionRow(title="Image or folder", subtitle_lines=2, use_markup=False)
-        self.wall_row.add_suffix(flat_button("image-x-generic-symbolic", "Choose image",
-                                             lambda: choose_wallpaper(self.get_root(), False, self._set_wall)))
-        self.wall_row.add_suffix(flat_button("folder-symbolic", "Choose folder (random image or slideshow)",
-                                             lambda: choose_wallpaper(self.get_root(), True, self._set_wall)))
-        self.thumb = None
-        self.slideshow_row = SlideshowRow(self.rule)
-        self._set_wall(self.rule.get("wallpaper"))
-        g.add(self.wall_row)
-        g.add(self.slideshow_row)
-        self.fit_row = Adw.ComboRow(title="Fit",
-                                    model=Gtk.StringList.new(["Use global setting"] + FIT_OPTIONS))
-        opt = self.rule.get("options")
-        self.fit_row.set_selected(FIT_OPTIONS.index(opt) + 1 if opt in FIT_OPTIONS else 0)
-        g.add(self.fit_row)
         page.add(g)
 
     def _entry(self, group, title, key):

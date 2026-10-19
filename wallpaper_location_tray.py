@@ -10,6 +10,7 @@ GTK 4 settings window.
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import gi
@@ -38,6 +39,15 @@ def menu_label(text, limit=48):
     if len(text) > limit:
         text = text[:limit - 1] + "…"
     return text.replace("_", "__")
+
+
+def format_time(ts):
+    """Date and time, following GNOME's 12/24-hour clock setting."""
+    try:
+        twelve = Gio.Settings.new("org.gnome.desktop.interface").get_string("clock-format") == "12h"
+    except Exception:
+        twelve = False
+    return time.strftime("%a %b %-d, %-I:%M %p" if twelve else "%a %b %-d, %H:%M", time.localtime(ts))
 
 
 def item(label, on_activate=None, cls=Gtk.MenuItem, **kw):
@@ -86,12 +96,13 @@ class Tray(Gtk.Application):
     def build_menu(self):
         menu = Gtk.Menu()
         self.current_item = item("Current: unknown", self.open_current)
+        self.changed_item = item("Last changed: unknown", sensitive=False)
         self.reveal_item = item("Show in Files", self.reveal_current)
         self.next_item = item("Next Wallpaper", lambda: self.run_task(core.next_wallpaper, self.cfg))
         self.pause_item = item("Pause Slideshow", cls=Gtk.CheckMenuItem)
         self.pause_item.connect("toggled", self.on_pause_toggled)
         self.place_item = item("Place")
-        for it in (self.current_item, self.reveal_item, Gtk.SeparatorMenuItem(),
+        for it in (self.current_item, self.changed_item, self.reveal_item, Gtk.SeparatorMenuItem(),
                    self.next_item, self.pause_item, Gtk.SeparatorMenuItem(),
                    self.place_item, Gtk.SeparatorMenuItem(),
                    item("Settings…", self.open_settings), item("Quit Tray Icon", self.quit)):
@@ -131,10 +142,17 @@ class Tray(Gtk.Application):
         self.updating = True
         self.current_item.set_label(menu_label(f"Current: {current.name}" if current else "Current: unknown"))
         self.current_item.set_sensitive(current is not None)
+        changed = core.last_changed(state)
+        self.changed_item.set_label(menu_label(
+            f"Last changed: {format_time(changed)}" if changed else "Last changed: unknown"))
         self.reveal_item.set_sensitive(current is not None)
         folder = rule is not None and Path(rule["wallpaper"]).expanduser().is_dir()
         self.next_item.set_sensitive(folder and not self.busy)
         self.pause_item.set_sensitive(slideshow and not self.busy)
+        self.pause_item.set_label(menu_label(
+            "Pause Slideshow" if slideshow or not rule
+            else f"Pause Slideshow (turn on Slideshow for {rule.get('name', 'this place')})" if folder
+            else "Pause Slideshow (not a folder)", limit=60))
         self.pause_item.set_active(bool(state.get("paused")))
         self.place_item.set_sensitive(not self.busy)
         if override in self.place_items:

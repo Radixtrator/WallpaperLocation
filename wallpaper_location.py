@@ -293,8 +293,9 @@ def save_state(state):
 # --- slideshow controls -----------------------------------------------------
 #
 # state.json remembers what was applied: "rule", "image" (the file handed to
-# GNOME), and for a slideshow {"order", "secs", "start"} so the image on screen
-# can be worked out from the clock. "paused" and "override" are the tray toggles.
+# GNOME), "changed_at" (when this tool last changed the image on screen), and
+# for a slideshow {"order", "secs", "start"} so the image on screen can be
+# worked out from the clock. "paused" and "override" are the tray toggles.
 
 def _is_ours(state):
     """True if the desktop still shows what this tool last set."""
@@ -322,8 +323,32 @@ def current_wallpaper(state=None):
     return image if image and image.suffix.lower() != ".xml" else None
 
 
-def play(state, order, secs, options=None):
-    """Put a slideshow on the desktop (just its first image while paused) and save state."""
+def last_changed(state=None):
+    """Unix time the image on screen last changed, or None if unknown."""
+    state = load_state() if state is None else state
+    if not _is_ours(state):
+        return None
+    changed = state.get("changed_at")
+    if changed is None:  # state written before this was recorded
+        try:
+            changed = STATE_PATH.stat().st_mtime
+        except OSError:
+            pass
+    show = state.get("slideshow")
+    if show and not state.get("paused"):
+        # GNOME moves the slideshow on by itself; after the first slide, the
+        # latest change is the start of the current slide.
+        elapsed = time.time() - show["start"]
+        if elapsed >= show["secs"] or changed is None:
+            return show["start"] + elapsed // show["secs"] * show["secs"]
+    return changed
+
+
+def play(state, order, secs, options=None, changed=True):
+    """Put a slideshow on the desktop (just its first image while paused) and save state.
+
+    changed=False when the image on screen stays the same (pausing/resuming).
+    """
     start = int(time.time())
     if state.get("paused") or len(order) == 1:
         image = Path(order[0])
@@ -338,6 +363,8 @@ def play(state, order, secs, options=None):
     remove_slideshows(keep=image)
     state["image"] = str(image.resolve())
     state["slideshow"] = {"order": [str(p) for p in order], "secs": secs, "start": start}
+    if changed:
+        state["changed_at"] = start
     save_state(state)
     return image
 
@@ -366,6 +393,7 @@ def next_wallpaper(cfg):
         remove_slideshows()
         state.pop("slideshow", None)
         state["image"] = str(image.resolve())
+        state["changed_at"] = int(time.time())
         save_state(state)
         return image
     return None
@@ -377,6 +405,8 @@ def set_paused(paused):
     if bool(state.get("paused")) == paused:
         return
     i = current_slide(state) if _is_ours(state) else None  # before flipping "paused"
+    if i is not None:
+        state["changed_at"] = int(last_changed(state))  # GNOME's own slide changes aren't recorded
     if paused:
         state["paused"] = True
     else:
@@ -385,7 +415,7 @@ def set_paused(paused):
         save_state(state)  # nothing playing; applies to the next slideshow
         return
     show = state["slideshow"]
-    play(state, _rotate(show["order"], i), show["secs"])
+    play(state, _rotate(show["order"], i), show["secs"], changed=False)
 
 
 def find_rule(cfg, name):
@@ -491,6 +521,7 @@ def apply(cfg, loc=None, force=False, dry_run=False, shuffle=None):
     remove_slideshows()
     state.pop("slideshow", None)
     state["image"] = str(image.resolve())
+    state["changed_at"] = int(time.time())
     save_state(state)
     return name, image, True
 

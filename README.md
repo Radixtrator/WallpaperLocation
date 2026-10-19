@@ -16,7 +16,7 @@ A small GTK4 / libadwaita app plus a background timer. It's written in Python, u
 - **Slideshows.** Turn a folder into a slideshow and choose how long each image stays, in seconds, minutes or hours. Shuffle shows every image once per round, in a new random order each round. **Shuffle Slideshow Now** makes a new order straight away. GNOME plays the slideshow itself with a cross-fade, so it keeps going between location checks.
 - **First match wins.** Reorder places to set priority, and set a fallback wallpaper for everywhere else, or leave it unset to keep your current wallpaper.
 - **Tray icon** with *Next Wallpaper*, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
-- **Runs in the background.** A systemd user timer checks every 10 minutes and at login. It only changes the wallpaper when you've moved to a different place.
+- **Runs in the background.** It checks a few seconds after you wake the laptop or join a different network, and every 10 minutes and at login as a backup. It only changes the wallpaper when you've moved to a different place, so open the lid somewhere new and the right wallpaper is usually up by the time you've unlocked.
 - **One-click helpers** fill in your current Wi-Fi, city or coordinates while you edit a place.
 - **CLI too.** `wallpaper-location where` / `run` work without the GUI.
 
@@ -57,7 +57,7 @@ This installs everything for your user only (no root):
 - the app into `~/.local/share/wallpaper-location/`, with `wallpaper-location` and `wallpaper-location-gui` linked into `~/.local/bin/`
 - a launcher entry, so **Wallpaper Location** shows up in the app grid
 - the tray icon (`wallpaper-location-tray`), started now and at every login; switch it off with **Show tray icon** in the app
-- the systemd user timer `wallpaper-location.timer`, enabled and started
+- the systemd user timer `wallpaper-location.timer` and the watcher `wallpaper-location-watch.service` (checks after waking up or changing networks), enabled and started
 - an empty config at `~/.config/wallpaper-location/config.toml`, so your wallpaper isn't touched until you add places
 
 To remove everything except your config:
@@ -89,6 +89,7 @@ wallpaper-location run --dry-run  # show what would happen
 wallpaper-location shuffle        # re-apply with a freshly shuffled slideshow order
 wallpaper-location next           # skip to the next image
 wallpaper-location pause          # freeze the slideshow (resume to continue)
+wallpaper-location watch          # stay running; check after waking up or changing networks
 ```
 
 ## Configuration
@@ -137,9 +138,10 @@ Slideshows are written as GNOME background XML files in `~/.local/state/wallpape
 - **"Geolocation disabled" in the log:** turn on *Settings → Privacy → Location*, or rely on Wi-Fi and IP lookup.
 - **Check the background job:**
   ```bash
-  journalctl --user -u wallpaper-location.service -n 20
+  journalctl --user -u wallpaper-location.service -u wallpaper-location-watch.service -n 20
   ```
 - **No tray icon:** enable the *AppIndicator and KStatusNotifierItem Support* extension, then run `wallpaper-location-tray` or turn on **Show tray icon** in the app.
+- **Lock screen shows the old place's wallpaper after waking up:** that's expected. GNOME's lock screen shows a blurred copy of the wallpaper you had when the laptop went to sleep. The check runs once the network reconnects, usually before you've finished unlocking. If you're not connected to any network, it waits 20 seconds after waking before checking.
 - **"Change automatically" is greyed out:** the timer isn't installed. Run `./install.sh`.
 
 ## License

@@ -17,6 +17,7 @@ import wallpaper_location as core  # noqa: E402
 
 FIT_OPTIONS = ["zoom", "scaled", "centered", "stretched", "spanned", "wallpaper"]
 TIMER = "wallpaper-location.timer"
+WATCHER = "wallpaper-location-watch.service"
 TRAY_ID = core.DESKTOP_ID + ".Tray"
 TRAY_DESKTOP = f"{TRAY_ID}.desktop"
 AUTOSTART = Path.home() / ".config" / "autostart" / TRAY_DESKTOP
@@ -440,7 +441,7 @@ class Window(Adw.ApplicationWindow):
         # Options
         g = Adw.PreferencesGroup(title="Options")
         self.auto_row = Adw.SwitchRow(title="Change automatically",
-                                      subtitle="Check your location every 10 minutes in the background")
+                                      subtitle="Check after waking up, when the network changes, and every 10 minutes")
         g.add(self.auto_row)
         det = self.cfg["detection"]
         self.geoclue_row = Adw.SwitchRow(title="Use GNOME Location Services",
@@ -628,7 +629,7 @@ class Window(Adw.ApplicationWindow):
             self.toasts.add_toast(Adw.Toast(title=f"Couldn't change the tray icon: {e}"))
 
     def _on_auto_toggled(self, row, _pspec):
-        res = systemctl("enable" if row.get_active() else "disable", "--now", TIMER)
+        res = systemctl("enable" if row.get_active() else "disable", "--now", TIMER, WATCHER)
         if not res or res.returncode != 0:
             self.toasts.add_toast(Adw.Toast(title="Couldn't change the background timer"))
 

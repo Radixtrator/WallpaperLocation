@@ -1,0 +1,12 @@
+[Unit]
+Description=Check location for wallpaper changes after waking up or changing networks
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/wallpaper-location watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

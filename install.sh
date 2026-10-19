@@ -29,6 +29,7 @@ fi
 
 install -Dm644 systemd/wallpaper-location.service ~/.config/systemd/user/wallpaper-location.service
 install -Dm644 systemd/wallpaper-location.timer ~/.config/systemd/user/wallpaper-location.timer
+install -Dm644 systemd/wallpaper-location-watch.service ~/.config/systemd/user/wallpaper-location-watch.service
 
 cfg=~/.config/wallpaper-location/config.toml
 if [[ ! -f $cfg ]]; then
@@ -41,6 +42,8 @@ fi
 
 systemctl --user daemon-reload
 systemctl --user enable --now wallpaper-location.timer
+systemctl --user enable wallpaper-location-watch.service
+systemctl --user restart wallpaper-location-watch.service  # restart picks up new code
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
 if ! grep -q '^Hidden=true' ~/.config/autostart/$tray && [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then
     # Restart a running tray so it picks up the new code.

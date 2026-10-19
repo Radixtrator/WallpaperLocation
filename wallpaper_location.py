@@ -495,15 +495,101 @@ def apply(cfg, loc=None, force=False, dry_run=False, shuffle=None):
     return name, image, True
 
 
+# --- watching for wake-up and network changes ------------------------------
+
+SETTLE_SECS = 3             # let a new connection finish coming up before checking
+RESUME_FALLBACK_SECS = 20   # check this long after waking even if the network stays the same
+
+
+def check(cfg, force=False, dry_run=False, shuffle=False):
+    """Pick and apply the wallpaper for here, logging what happened."""
+    loc = None if override_rule(cfg) else detect_location(cfg)
+    name, image, changed = apply(cfg, loc, force=force or shuffle, dry_run=dry_run,
+                                 shuffle=shuffle or None)
+    if name is None:
+        log(f"no rule matched and no [default] set; location: {loc}")
+    elif not changed:
+        log(f"still at '{name}', leaving wallpaper alone")
+    else:
+        how = "manually chosen" if loc is None else "location matched"
+        print(f"{how} '{name}' -> {image}", flush=True)
+
+
+def watch(config_path):
+    """Check soon after waking from suspend and whenever the network connection changes.
+
+    Events while going to sleep, and plain disconnects, are ignored: with no
+    network nothing can be detected, and a check then would wrongly fall back
+    to [default] (which the lock screen would then show).
+    """
+    from gi.repository import Gio, GLib
+
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+    st = {"sleeping": False, "timer": 0, "running": False, "again": False}
+
+    def schedule(secs, why):
+        if st["timer"]:
+            GLib.source_remove(st["timer"])
+        st["timer"] = GLib.timeout_add_seconds(secs, fire, why)
+
+    def fire(why):
+        st["timer"] = 0
+        if st["running"]:
+            st["again"] = True
+            return False
+        st["running"] = True
+
+        def worker():
+            log(f"checking: {why}")
+            try:
+                check(load_config(config_path))
+            except Exception as e:  # keep watching whatever happens
+                log(f"check failed: {e}")
+            GLib.idle_add(finished)
+        threading.Thread(target=worker, daemon=True).start()
+        return False
+
+    def finished():
+        st["running"] = False
+        if st["again"]:
+            st["again"] = False
+            schedule(SETTLE_SECS, "network changed during the last check")
+        return False
+
+    def on_sleep(*args):
+        going = args[-1].unpack()[0]
+        st["sleeping"] = going
+        if going and st["timer"]:
+            GLib.source_remove(st["timer"])
+            st["timer"] = 0
+        elif not going:
+            schedule(RESUME_FALLBACK_SECS, "woke up")
+
+    def on_network(*args):
+        _iface, changed, _ = args[-1].unpack()
+        if st["sleeping"] or changed.get("PrimaryConnection", "/") == "/":
+            return
+        schedule(SETTLE_SECS, "network changed")
+
+    bus.signal_subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+                         "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, on_sleep)
+    bus.signal_subscribe("org.freedesktop.NetworkManager", "org.freedesktop.DBus.Properties",
+                         "PropertiesChanged", "/org/freedesktop/NetworkManager",
+                         "org.freedesktop.NetworkManager", Gio.DBusSignalFlags.NONE, on_network)
+    log("watching for wake-up and network changes")
+    GLib.MainLoop().run()
+
+
 # --- main -------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="?", default="run",
-                    choices=["run", "where", "shuffle", "next", "pause", "resume"],
+                    choices=["run", "where", "shuffle", "next", "pause", "resume", "watch"],
                     help="run: apply wallpaper (default); where: just print detected location; "
                          "shuffle: re-apply with a freshly shuffled slideshow; "
-                         "next: skip to the next image; pause/resume: freeze or continue the slideshow")
+                         "next: skip to the next image; pause/resume: freeze or continue the slideshow; "
+                         "watch: stay running and check after waking up or changing networks")
     ap.add_argument("-c", "--config", type=Path, default=CONFIG_PATH)
     ap.add_argument("-n", "--dry-run", action="store_true", help="don't change the wallpaper")
     ap.add_argument("-f", "--force", action="store_true",
@@ -527,18 +613,11 @@ def main():
     if args.command in ("pause", "resume"):
         set_paused(args.command == "pause")
         return
+    if args.command == "watch":
+        watch(args.config)
+        return
 
-    loc = None if override_rule(cfg) else detect_location(cfg)
-    shuffle = args.command == "shuffle"
-    name, image, changed = apply(cfg, loc, force=args.force or shuffle, dry_run=args.dry_run,
-                                 shuffle=shuffle or None)
-    if name is None:
-        log(f"no rule matched and no [default] set; location: {loc}")
-    elif not changed:
-        log(f"still at '{name}', leaving wallpaper alone")
-    else:
-        how = "manually chosen" if loc is None else "location matched"
-        print(f"{how} '{name}' -> {image}")
+    check(cfg, force=args.force, dry_run=args.dry_run, shuffle=args.command == "shuffle")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import tomllib
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -29,6 +30,10 @@ CONFIG_PATH = Path.home() / ".config" / APP_ID / "config.toml"
 STATE_PATH = Path.home() / ".local" / "state" / APP_ID / "state.json"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", ".jxl", ".avif"}
 TRANSITION_SECS = 2.0
+MIN_SLIDE_SECS = 5
+# How far ahead a shuffled slideshow is planned, and a cap on its length.
+SLIDESHOW_SPAN_SECS = 7 * 24 * 3600
+SLIDESHOW_MAX_SLIDES = 5000
 
 
 def log(msg):
@@ -172,25 +177,53 @@ def resolve_image(path_str):
     return path
 
 
-def write_slideshow(images, minutes, shuffle=True):
-    """Write a GNOME background slideshow XML cycling through images.
+def slide_seconds(value):
+    """Parse a slideshow duration: a number of minutes, or "30s" / "10m" / "2h"."""
+    if isinstance(value, str):
+        units = {"s": 1, "m": 60, "h": 3600}
+        v = value.strip().lower()
+        secs = float(v[:-1]) * units[v[-1]] if v and v[-1] in units else float(v) * 60
+    else:
+        secs = float(value) * 60
+    return max(secs, MIN_SLIDE_SECS)
+
+
+def shuffled_passes(images, secs):
+    """Several back-to-back shuffled passes over images.
+
+    Each pass shows every image exactly once, and a new pass never starts with
+    the image the previous one ended on, so nothing repeats back to back.
+    """
+    passes = max(1, min(math.ceil(SLIDESHOW_SPAN_SECS / (secs * len(images))),
+                        SLIDESHOW_MAX_SLIDES // len(images)))
+    order = []
+    for _ in range(passes):
+        p = random.sample(images, len(images))
+        if order and len(p) > 1 and p[0] == order[-1]:
+            j = random.randrange(1, len(p))
+            p[0], p[j] = p[j], p[0]
+        order += p
+    # The XML loops, so the last slide must not equal the first either.
+    if len(images) > 1 and order[-1] == order[0]:
+        order[-1], order[-2] = order[-2], order[-1]
+    return order
+
+
+def write_slideshow(order, secs, start):
+    """Write a GNOME background slideshow XML that loops through order from start.
 
     GNOME plays it natively (with a cross-fade), so no timer is needed for the
     image changes. A fresh file name each time makes GNOME notice the change.
     """
-    images = list(images)
-    if shuffle:
-        random.shuffle(images)
-    secs = max(float(minutes) * 60, TRANSITION_SECS + 1)
-    t = time.localtime()
+    t = time.localtime(start)
     parts = ["<background>\n  <starttime>"
              f"<year>{t.tm_year}</year><month>{t.tm_mon}</month><day>{t.tm_mday}</day>"
              f"<hour>{t.tm_hour}</hour><minute>{t.tm_min}</minute><second>{t.tm_sec}</second>"
              "</starttime>\n"]
-    for img, nxt in zip(images, images[1:] + images[:1]):
-        a, b = escape(str(img.resolve())), escape(str(nxt.resolve()))
+    for img, nxt in zip(order, order[1:] + order[:1]):
+        a, b = escape(str(img)), escape(str(nxt))
         parts.append(f"  <static><duration>{secs - TRANSITION_SECS}</duration><file>{a}</file></static>\n")
-        if len(images) > 1:
+        if len(order) > 1:
             parts.append(f'  <transition type="overlay"><duration>{TRANSITION_SECS}</duration>'
                          f"<from>{a}</from><to>{b}</to></transition>\n")
     parts.append("</background>\n")
@@ -210,21 +243,39 @@ def is_slideshow(rule):
     return bool(rule.get("slideshow")) and Path(rule["wallpaper"]).expanduser().is_dir()
 
 
-def resolve_wallpaper(rule):
-    """The file to hand to GNOME: an image, or a generated slideshow XML."""
-    if is_slideshow(rule):
-        images = folder_images(Path(rule["wallpaper"]).expanduser())
-        return write_slideshow(images, rule["slideshow"], rule.get("shuffle", True))
-    if rule.get("slideshow"):
-        log(f"slideshow needs a folder, {rule['wallpaper']} isn't one; using it as a single image")
-    return resolve_image(rule["wallpaper"])
+def slideshow_order(rule, shuffle=None):
+    """(images in play order, seconds per image) for a slideshow rule.
+
+    shuffle overrides the rule's own shuffle setting when not None.
+    """
+    images = [p.resolve() for p in folder_images(Path(rule["wallpaper"]).expanduser())]
+    secs = max(slide_seconds(rule["slideshow"]), TRANSITION_SECS + 1)
+    if shuffle is None:
+        shuffle = rule.get("shuffle", True)
+    if shuffle and len(images) > 1:
+        images = shuffled_passes(images, secs)
+    return images, secs
 
 
-def set_wallpaper(image, options="zoom"):
+def set_wallpaper(image, options=None):
     uri = image.resolve().as_uri()
     schema = "org.gnome.desktop.background"
-    for key, val in (("picture-uri", uri), ("picture-uri-dark", uri), ("picture-options", options)):
+    pairs = [("picture-uri", uri), ("picture-uri-dark", uri)]
+    if options:
+        pairs.append(("picture-options", options))
+    for key, val in pairs:
         subprocess.run(["gsettings", "set", schema, key, val], check=True)
+
+
+def gnome_wallpaper():
+    """The file GNOME is currently showing (an image or a slideshow XML), or None."""
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.desktop.background", "picture-uri"],
+                             capture_output=True, text=True, timeout=5).stdout.strip().strip("'")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    url = urllib.parse.urlparse(out)
+    return Path(urllib.parse.unquote(url.path)) if url.scheme == "file" else None
 
 
 def load_state():
@@ -237,6 +288,132 @@ def load_state():
 def save_state(state):
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state))
+
+
+# --- slideshow controls -----------------------------------------------------
+#
+# state.json remembers what was applied: "rule", "image" (the file handed to
+# GNOME), and for a slideshow {"order", "secs", "start"} so the image on screen
+# can be worked out from the clock. "paused" and "override" are the tray toggles.
+
+def _is_ours(state):
+    """True if the desktop still shows what this tool last set."""
+    return bool(state.get("image")) and gnome_wallpaper() == Path(state["image"])
+
+
+def current_slide(state):
+    """Index into the slideshow order of the image on screen, or None."""
+    show = state.get("slideshow")
+    if not show or not show.get("order"):
+        return None
+    if state.get("paused"):
+        return 0  # pausing rotates the order so the frozen image is first
+    return int((time.time() - show["start"]) // show["secs"]) % len(show["order"])
+
+
+def current_wallpaper(state=None):
+    """The image currently on the desktop, or None if unknown."""
+    state = load_state() if state is None else state
+    if _is_ours(state):
+        i = current_slide(state)
+        if i is not None:
+            return Path(state["slideshow"]["order"][i])
+    image = gnome_wallpaper()
+    return image if image and image.suffix.lower() != ".xml" else None
+
+
+def play(state, order, secs, options=None):
+    """Put a slideshow on the desktop (just its first image while paused) and save state."""
+    start = int(time.time())
+    if state.get("paused") or len(order) == 1:
+        image = Path(order[0])
+    else:
+        image = write_slideshow(order, secs, start)
+    try:
+        set_wallpaper(image, options)
+    except Exception:
+        if image.parent == STATE_PATH.parent:
+            image.unlink(missing_ok=True)
+        raise
+    remove_slideshows(keep=image)
+    state["image"] = str(image.resolve())
+    state["slideshow"] = {"order": [str(p) for p in order], "secs": secs, "start": start}
+    save_state(state)
+    return image
+
+
+def _rotate(order, i):
+    return order[i:] + order[:i]
+
+
+def next_wallpaper(cfg):
+    """Skip to the next slideshow image, or another random image from a folder.
+
+    Returns the new image, or None if the current place has nothing to skip to.
+    """
+    state = load_state()
+    i = current_slide(state) if _is_ours(state) else None
+    if i is not None:
+        show = state["slideshow"]
+        play(state, _rotate(show["order"], (i + 1) % len(show["order"])), show["secs"])
+        return Path(state["slideshow"]["order"][0])
+    rule = find_rule(cfg, state.get("rule"))
+    if rule and Path(rule["wallpaper"]).expanduser().is_dir():
+        current = current_wallpaper(state)
+        images = folder_images(Path(rule["wallpaper"]).expanduser())
+        image = random.choice([p for p in images if p.resolve() != current] or images)
+        set_wallpaper(image)
+        remove_slideshows()
+        state.pop("slideshow", None)
+        state["image"] = str(image.resolve())
+        save_state(state)
+        return image
+    return None
+
+
+def set_paused(paused):
+    """Freeze the slideshow on the image showing now, or carry on from it."""
+    state = load_state()
+    if bool(state.get("paused")) == paused:
+        return
+    i = current_slide(state) if _is_ours(state) else None  # before flipping "paused"
+    if paused:
+        state["paused"] = True
+    else:
+        state.pop("paused", None)
+    if i is None:
+        save_state(state)  # nothing playing; applies to the next slideshow
+        return
+    show = state["slideshow"]
+    play(state, _rotate(show["order"], i), show["secs"])
+
+
+def find_rule(cfg, name):
+    if not name:
+        return None
+    for rule in cfg.get("rule", []):
+        if rule.get("name", rule.get("wallpaper")) == name:
+            return rule
+    if name == "default" and "default" in cfg:
+        return {"name": "default", **cfg["default"]}
+    return None
+
+
+def override_rule(cfg, state=None):
+    """The place picked by hand, if any (and it still exists)."""
+    state = load_state() if state is None else state
+    return find_rule(cfg, state.get("override"))
+
+
+def set_override(cfg, name):
+    """Use place `name` regardless of location; None goes back to automatic."""
+    state = load_state()
+    if name:
+        state["override"] = name
+    else:
+        state.pop("override", None)
+    save_state(state)
+    return apply(cfg, force=True)
 
 
 # --- config -----------------------------------------------------------------
@@ -278,18 +455,23 @@ def save_config(cfg, path=CONFIG_PATH):
     path.write_text("".join(out))
 
 
-def apply(cfg, loc=None, force=False, dry_run=False):
-    """Detect location (unless given), pick a rule and set the wallpaper.
+def apply(cfg, loc=None, force=False, dry_run=False, shuffle=None):
+    """Pick a rule (the manual override, else by location) and set the wallpaper.
+
+    Location is detected unless given. shuffle=True/False overrides the matched
+    slideshow's own shuffle setting.
 
     Returns (rule_name, image_path, changed); rule_name is None if nothing matched.
     """
-    if loc is None:
-        loc = detect_location(cfg)
-    rule = pick_rule(cfg, loc)
+    state = load_state()
+    rule = override_rule(cfg, state)
+    if rule is None:
+        if loc is None:
+            loc = detect_location(cfg)
+        rule = pick_rule(cfg, loc)
     if rule is None:
         return None, None, False
     name = rule.get("name", rule.get("wallpaper"))
-    state = load_state()
     if state.get("rule") == name and not force:
         return name, state.get("image"), False
     if dry_run:
@@ -297,14 +479,19 @@ def apply(cfg, loc=None, force=False, dry_run=False):
             path = Path(rule["wallpaper"]).expanduser()
             return name, f"slideshow of {len(folder_images(path))} images in {path}", True
         return name, resolve_image(rule["wallpaper"]), True
-    image = resolve_wallpaper(rule)
-    try:
-        set_wallpaper(image, rule.get("options") or cfg.get("options", "zoom"))
-    except Exception:
-        remove_slideshows(keep=Path(state["image"]) if state.get("image") else None)
-        raise
-    remove_slideshows(keep=image)
-    save_state({"rule": name, "image": str(image)})
+    options = rule.get("options") or cfg.get("options", "zoom")
+    state["rule"] = name
+    if is_slideshow(rule):
+        image = play(state, *slideshow_order(rule, shuffle), options)
+        return name, image, True
+    if rule.get("slideshow"):
+        log(f"slideshow needs a folder, {rule['wallpaper']} isn't one; using it as a single image")
+    image = resolve_image(rule["wallpaper"])
+    set_wallpaper(image, options)
+    remove_slideshows()
+    state.pop("slideshow", None)
+    state["image"] = str(image.resolve())
+    save_state(state)
     return name, image, True
 
 
@@ -312,8 +499,11 @@ def apply(cfg, loc=None, force=False, dry_run=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", nargs="?", default="run", choices=["run", "where"],
-                    help="run: apply wallpaper (default); where: just print detected location")
+    ap.add_argument("command", nargs="?", default="run",
+                    choices=["run", "where", "shuffle", "next", "pause", "resume"],
+                    help="run: apply wallpaper (default); where: just print detected location; "
+                         "shuffle: re-apply with a freshly shuffled slideshow; "
+                         "next: skip to the next image; pause/resume: freeze or continue the slideshow")
     ap.add_argument("-c", "--config", type=Path, default=CONFIG_PATH)
     ap.add_argument("-n", "--dry-run", action="store_true", help="don't change the wallpaper")
     ap.add_argument("-f", "--force", action="store_true",
@@ -327,18 +517,28 @@ def main():
             sys.exit(f"No config at {args.config} - copy config.example.toml there.")
         cfg = {}
 
-    loc = detect_location(cfg)
     if args.command == "where":
-        print(json.dumps(loc, indent=2))
+        print(json.dumps(detect_location(cfg), indent=2))
+        return
+    if args.command == "next":
+        image = next_wallpaper(cfg)
+        print(image if image else "nothing to skip to: the current place isn't a folder")
+        return
+    if args.command in ("pause", "resume"):
+        set_paused(args.command == "pause")
         return
 
-    name, image, changed = apply(cfg, loc, force=args.force, dry_run=args.dry_run)
+    loc = None if override_rule(cfg) else detect_location(cfg)
+    shuffle = args.command == "shuffle"
+    name, image, changed = apply(cfg, loc, force=args.force or shuffle, dry_run=args.dry_run,
+                                 shuffle=shuffle or None)
     if name is None:
         log(f"no rule matched and no [default] set; location: {loc}")
     elif not changed:
         log(f"still at '{name}', leaving wallpaper alone")
     else:
-        print(f"location matched '{name}' -> {image}")
+        how = "manually chosen" if loc is None else "location matched"
+        print(f"{how} '{name}' -> {image}")
 
 
 if __name__ == "__main__":

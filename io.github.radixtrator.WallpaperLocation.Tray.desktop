@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Location Tray
+Comment=Tray icon to skip, pause or pin your location-based wallpaper
+Exec=wallpaper-location-tray
+Icon=preferences-desktop-wallpaper
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-Geoclue-Reason=Pick a wallpaper for where you are

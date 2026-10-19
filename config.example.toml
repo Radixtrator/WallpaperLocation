@@ -6,8 +6,10 @@
 #   city / region / country = "Portland" / "Oregon" / "US"   (from IP lookup)
 #   lat, lon, radius_km     = GPS-ish circle (radius defaults to 5 km)
 # `wallpaper` may be an image file or a folder (a random image from it or its subfolders is picked).
-# With a folder, `slideshow = <minutes>` cycles through all of its images instead
-# (GNOME cross-fades between them); add `shuffle = false` to go in name order.
+# With a folder, `slideshow` cycles through all of its images instead (GNOME
+# cross-fades between them). It's how long each image stays: a number of minutes,
+# or "45s" / "10m" / "2h". Shuffled by default: every image once per round, in a
+# new random order each round. Add `shuffle = false` to go in name order.
 # `options` is GNOME's picture-options: zoom, scaled, centered, stretched, spanned, wallpaper.
 
 options = "zoom"
@@ -20,7 +22,7 @@ ip_lookup = true   # asks ipinfo.io for your public IP's city; set false to stay
 name = "home"
 ssid = "MyHomeWifi"
 wallpaper = "~/Pictures/Wallpapers/home"
-slideshow = 30     # new image every 30 minutes
+slideshow = 30     # each image stays 30 minutes ("45s" and "2h" work too)
 
 [[rule]]
 name = "office"

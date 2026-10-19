@@ -17,6 +17,10 @@ import wallpaper_location as core  # noqa: E402
 
 FIT_OPTIONS = ["zoom", "scaled", "centered", "stretched", "spanned", "wallpaper"]
 TIMER = "wallpaper-location.timer"
+TRAY_ID = core.DESKTOP_ID + ".Tray"
+TRAY_DESKTOP = f"{TRAY_ID}.desktop"
+AUTOSTART = Path.home() / ".config" / "autostart" / TRAY_DESKTOP
+DURATION_UNITS = [("seconds", 1), ("minutes", 60), ("hours", 3600)]
 CSS = b".thumb { border-radius: 6px; }"
 
 
@@ -52,8 +56,24 @@ def describe_rule(rule):
         parts.append(f"Within {rule.get('radius_km', 5):g} km of {rule['lat']:.4f}, {rule['lon']:.4f}")
     desc = " · ".join(parts) or "No conditions"
     if rule.get("slideshow"):
-        desc += f"\nSlideshow, every {rule['slideshow']:g} min"
+        order = "shuffled" if rule.get("shuffle", True) else "in order"
+        desc += f"\nSlideshow, {format_duration(core.slide_seconds(rule['slideshow']))} each, {order}"
     return desc
+
+
+def split_duration(secs):
+    """Seconds -> (amount, unit index) in the largest unit that divides evenly."""
+    for i in reversed(range(len(DURATION_UNITS))):
+        factor = DURATION_UNITS[i][1]
+        if secs >= factor and secs % factor == 0:
+            return int(secs // factor), i
+    return round(secs), 0
+
+
+def format_duration(secs):
+    amount, i = split_duration(secs)
+    unit = DURATION_UNITS[i][0]
+    return f"{amount} {unit[:-1] if amount == 1 else unit}"
 
 
 def first_image(path_str):
@@ -128,21 +148,28 @@ def flat_button(icon, tooltip, on_click):
 
 
 class SlideshowRow(Adw.ExpanderRow):
-    """Slideshow on/off, interval and shuffle; only usable when the wallpaper is a folder."""
+    """Slideshow on/off, time per image and shuffle; only usable when the wallpaper is a folder."""
 
     def __init__(self, rule, on_change=None):
         on = bool(rule.get("slideshow"))
         super().__init__(title="Slideshow", show_enable_switch=True,
                          enable_expansion=on, expanded=on)
-        self.minutes_row = Adw.SpinRow.new_with_range(1, 1440, 5)
-        self.minutes_row.set_title("Change every (minutes)")
-        self.minutes_row.set_value(rule.get("slideshow") or 30)
-        self.shuffle_row = Adw.SwitchRow(title="Shuffle", active=rule.get("shuffle", True))
-        self.add_row(self.minutes_row)
-        self.add_row(self.shuffle_row)
+        amount, unit = split_duration(core.slide_seconds(rule["slideshow"]) if on else 30 * 60)
+        self.amount_row = Adw.SpinRow.new_with_range(1, 9999, 1)
+        self.amount_row.set_title("Show each image for")
+        self.amount_row.set_value(amount)
+        self.unit_row = Adw.ComboRow(title="Unit",
+                                     model=Gtk.StringList.new([u for u, _ in DURATION_UNITS]))
+        self.unit_row.set_selected(unit)  # after the model, or it resets to 0
+        self.shuffle_row = Adw.SwitchRow(
+            title="Shuffle", active=rule.get("shuffle", True),
+            subtitle="Random order, every image once per round, reshuffled each round")
+        for row in (self.amount_row, self.unit_row, self.shuffle_row):
+            self.add_row(row)
         if on_change:
             self.connect("notify::enable-expansion", lambda *_: on_change())
-            self.minutes_row.connect("notify::value", lambda *_: on_change())
+            self.amount_row.connect("notify::value", lambda *_: on_change())
+            self.unit_row.connect("notify::selected", lambda *_: on_change())
             self.shuffle_row.connect("notify::active", lambda *_: on_change())
 
     def set_folder(self, path_str):
@@ -154,10 +181,36 @@ class SlideshowRow(Adw.ExpanderRow):
     def values(self):
         if not (self.get_sensitive() and self.get_enable_expansion()):
             return {}
-        vals = {"slideshow": int(self.minutes_row.get_value())}
+        secs = max(int(self.amount_row.get_value()) * DURATION_UNITS[self.unit_row.get_selected()][1],
+                   core.MIN_SLIDE_SECS)
+        # Whole minutes stay a plain number (the original format); otherwise "90s" / "2h".
+        vals = {"slideshow": f"{secs // 3600}h" if secs % 3600 == 0
+                else secs // 60 if secs % 60 == 0 else f"{secs}s"}
         if not self.shuffle_row.get_active():
             vals["shuffle"] = False
         return vals
+
+
+def tray_enabled():
+    try:
+        return "\nHidden=true" not in AUTOSTART.read_text()
+    except OSError:
+        return False
+
+
+def set_tray(on):
+    """Turn the tray icon's autostart on or off, and start or stop it now."""
+    installed = Path.home() / ".local" / "share" / "applications" / TRAY_DESKTOP
+    AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+    text = installed.read_text()
+    # Hidden=true (rather than deleting the file) keeps install.sh from re-enabling it.
+    AUTOSTART.write_text(text if on else text + "Hidden=true\n")
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    if on:
+        exe = Path(__file__).resolve().parent / "wallpaper_location_tray.py"
+        subprocess.Popen([sys.executable, str(exe)], start_new_session=True)
+    else:
+        Gio.DBusActionGroup.get(bus, TRAY_ID, "/" + TRAY_ID.replace(".", "/")).activate_action("quit", None)
 
 
 def systemctl(*args):
@@ -346,6 +399,14 @@ class Window(Adw.ApplicationWindow):
         self.place_row = self._info_row(g, "Place", "mark-location-symbolic")
         self.coords_row = self._info_row(g, "Coordinates", "find-location-symbolic")
         self.match_row = self._info_row(g, "Wallpaper chosen", "preferences-desktop-wallpaper-symbolic")
+        self.shuffle_btn = Adw.ButtonRow(title="Shuffle Slideshow Now", visible=False,
+                                         start_icon_name="media-playlist-shuffle-symbolic")
+        self.shuffle_btn.connect("activated", lambda *_: self.apply_now(shuffle=True))
+        g.add(self.shuffle_btn)
+        self.auto_btn = Adw.ButtonRow(title="Pick by Location Again", visible=False,
+                                      start_icon_name="find-location-symbolic")
+        self.auto_btn.connect("activated", lambda *_: self.clear_override())
+        g.add(self.auto_btn)
         page.add(g)
 
         # Places
@@ -391,6 +452,14 @@ class Window(Adw.ApplicationWindow):
         for row, key in ((self.geoclue_row, "geoclue"), (self.ip_row, "ip_lookup")):
             row.connect("notify::active", self._on_detection_toggled, key)
             g.add(row)
+        self.tray_row = Adw.SwitchRow(title="Show tray icon",
+                                      subtitle="Next wallpaper, pause, and picking a place by hand",
+                                      active=tray_enabled())
+        if not (Path.home() / ".local" / "share" / "applications" / TRAY_DESKTOP).is_file():
+            self.tray_row.set_sensitive(False)
+            self.tray_row.set_subtitle("Run install.sh to add the tray icon")
+        self.tray_row.connect("notify::active", self._on_tray_toggled)
+        g.add(self.tray_row)
         self.fit_row = Adw.ComboRow(title="Fit", model=Gtk.StringList.new(FIT_OPTIONS))
         opt = self.cfg.get("options", "zoom")
         self.fit_row.set_selected(FIT_OPTIONS.index(opt) if opt in FIT_OPTIONS else 0)
@@ -398,6 +467,7 @@ class Window(Adw.ApplicationWindow):
         g.add(self.fit_row)
         page.add(g)
 
+        self.connect("notify::is-active", lambda *_: self.is_active() and self.update_match())
         self.refresh_rules()
         self.set_default(self.cfg.get("default", {}).get("wallpaper"), save=False)
         self.init_timer_row()
@@ -436,11 +506,16 @@ class Window(Adw.ApplicationWindow):
     def update_match(self):
         if self.loc is None:
             return
-        rule = core.pick_rule(self.cfg, self.loc)
+        rule = core.override_rule(self.cfg)
+        manual = rule is not None
+        if not manual:
+            rule = core.pick_rule(self.cfg, self.loc)
         self.match_row.set_subtitle(
             "Nothing matches — wallpaper left alone" if rule is None
-            else "Default wallpaper" if rule.get("name") == "default"
-            else rule.get("name", "?"))
+            else ("Default wallpaper" if rule.get("name") == "default" else rule.get("name", "?"))
+            + (" (picked by hand from the tray)" if manual else ""))
+        self.auto_btn.set_visible(manual)
+        self.shuffle_btn.set_visible(rule is not None and core.is_slideshow(rule))
 
     # -- places --
 
@@ -523,6 +598,7 @@ class Window(Adw.ApplicationWindow):
                 default.pop(key, None)
             default.update(self.default_slideshow.values())
         self.save()
+        self.update_match()
 
     # -- options --
 
@@ -545,6 +621,12 @@ class Window(Adw.ApplicationWindow):
         self.auto_row.set_active(state == "enabled")
         self.auto_row.connect("notify::active", self._on_auto_toggled)
 
+    def _on_tray_toggled(self, row, _pspec):
+        try:
+            set_tray(row.get_active())
+        except (OSError, GLib.Error) as e:
+            self.toasts.add_toast(Adw.Toast(title=f"Couldn't change the tray icon: {e}"))
+
     def _on_auto_toggled(self, row, _pspec):
         res = systemctl("enable" if row.get_active() else "disable", "--now", TIMER)
         if not res or res.returncode != 0:
@@ -558,17 +640,31 @@ class Window(Adw.ApplicationWindow):
         except OSError as e:
             self.toasts.add_toast(Adw.Toast(title=f"Couldn't save config: {e}"))
 
-    def apply_now(self):
-        self.apply_btn.set_sensitive(False)
-        loc = self.loc
-        run_bg(lambda: core.apply(self.cfg, loc, force=True), self._on_applied)
+    def clear_override(self):
+        self.auto_btn.set_sensitive(False)
 
-    def _on_applied(self, res, err):
+        def done(res, err):
+            self.auto_btn.set_sensitive(True)
+            self.update_match()
+            self._on_applied(res, err)
+        run_bg(lambda: core.set_override(self.cfg, None), done)
+
+    def apply_now(self, shuffle=False):
+        self.apply_btn.set_sensitive(False)
+        self.shuffle_btn.set_sensitive(False)
+        loc = self.loc
+        run_bg(lambda: core.apply(self.cfg, loc, force=True, shuffle=shuffle or None),
+               lambda res, err: self._on_applied(res, err, shuffle))
+
+    def _on_applied(self, res, err, shuffled=False):
         self.apply_btn.set_sensitive(True)
+        self.shuffle_btn.set_sensitive(True)
         if err:
             msg = f"Couldn't set wallpaper: {err}"
         elif res[0] is None:
             msg = "No place matched and no default is set"
+        elif shuffled:
+            msg = f"Slideshow for “{res[0]}” reshuffled"
         else:
             msg = f"Wallpaper set for “{res[0]}”"
         self.toasts.add_toast(Adw.Toast(title=msg))

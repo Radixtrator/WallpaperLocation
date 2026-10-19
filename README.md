@@ -13,8 +13,9 @@ A small GTK4 / libadwaita app plus a background timer. It's written in Python, u
 
 - **Match places by** Wi-Fi network name, city, region, country, or distance from a point on the map. Combine them however you like.
 - **An image or a folder per place.** With a folder, a random image is picked from it, including its subfolders.
-- **Slideshows.** Turn a folder into a slideshow that changes image every few minutes, shuffled or in name order. GNOME plays it natively with a cross-fade, so it keeps going between location checks.
+- **Slideshows.** Turn a folder into a slideshow and choose how long each image stays, in seconds, minutes or hours. Shuffle shows every image once per round, in a new random order each round. **Shuffle Slideshow Now** makes a new order straight away. GNOME plays the slideshow itself with a cross-fade, so it keeps going between location checks.
 - **First match wins.** Reorder places to set priority, and set a fallback wallpaper for everywhere else, or leave it unset to keep your current wallpaper.
+- **Tray icon** with *Next Wallpaper*, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
 - **Runs in the background.** A systemd user timer checks every 10 minutes and at login. It only changes the wallpaper when you've moved to a different place.
 - **One-click helpers** fill in your current Wi-Fi, city or coordinates while you edit a place.
 - **CLI too.** `wallpaper-location where` / `run` work without the GUI.
@@ -34,11 +35,13 @@ Every check uses all of these sources and combines what each one finds:
 - GNOME 47 or newer (GTK 4, libadwaita ≥ 1.6)
 - Python 3.11+ with PyGObject
 - NetworkManager (for Wi-Fi matching), GeoClue (optional)
+- For the tray icon: libappindicator (GTK 3) and the GNOME extension [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/)
 
 On Arch / CachyOS, all of these are usually already installed with GNOME:
 
 ```bash
-sudo pacman -S --needed python-gobject gtk4 libadwaita geoclue networkmanager
+sudo pacman -S --needed python-gobject gtk4 libadwaita geoclue networkmanager \
+    gtk3 libappindicator gnome-shell-extension-appindicator
 ```
 
 ## Install
@@ -53,6 +56,7 @@ This installs everything for your user only (no root):
 
 - the app into `~/.local/share/wallpaper-location/`, with `wallpaper-location` and `wallpaper-location-gui` linked into `~/.local/bin/`
 - a launcher entry, so **Wallpaper Location** shows up in the app grid
+- the tray icon (`wallpaper-location-tray`), started now and at every login; switch it off with **Show tray icon** in the app
 - the systemd user timer `wallpaper-location.timer`, enabled and started
 - an empty config at `~/.config/wallpaper-location/config.toml`, so your wallpaper isn't touched until you add places
 
@@ -66,6 +70,15 @@ To remove everything except your config:
 
 Open **Wallpaper Location**, click **+** to add a place, choose what it matches on and pick a wallpaper. Changes are saved straight away. Click **Apply Now** to switch immediately; otherwise the background timer picks the change up within 10 minutes.
 
+### Tray icon
+
+| Menu item | What it does |
+| --- | --- |
+| **Current: *name*** | Opens the image on screen. **Show in Files** opens its folder. |
+| **Next Wallpaper** | Skips to the next image in a slideshow, or picks another random image from a folder. Middle-clicking the icon does the same. |
+| **Pause Slideshow** | Keeps the current image on screen. Unpausing carries on from that image. The pause stays on when you move to another place, until you turn it off. |
+| **Place** | *Automatic* chooses by location. Choosing a place keeps it, and the background timer, on that place wherever you are, until you switch back to *Automatic*. The app shows this too and has **Pick by Location Again**. |
+
 From a terminal:
 
 ```bash
@@ -73,6 +86,9 @@ wallpaper-location where          # print what was detected
 wallpaper-location run            # apply if the matched place changed
 wallpaper-location run --force    # apply even if it didn't (re-rolls folder picks / reshuffles slideshows)
 wallpaper-location run --dry-run  # show what would happen
+wallpaper-location shuffle        # re-apply with a freshly shuffled slideshow order
+wallpaper-location next           # skip to the next image
+wallpaper-location pause          # freeze the slideshow (resume to continue)
 ```
 
 ## Configuration
@@ -90,8 +106,8 @@ ip_lookup = true
 name = "home"
 ssid = "MyHomeWifi"       # or a list: ["Wifi-A", "Wifi-B"]
 wallpaper = "~/Pictures/Wallpapers/home"   # file or folder
-slideshow = 30            # folder only: new image every 30 minutes
-shuffle = true            # default; false = name order
+slideshow = 30            # folder only: minutes per image, or "45s" / "2h"
+shuffle = true            # default: no repeats, new random order each round; false = name order
 
 [[rule]]
 name = "office"
@@ -123,6 +139,7 @@ Slideshows are written as GNOME background XML files in `~/.local/state/wallpape
   ```bash
   journalctl --user -u wallpaper-location.service -n 20
   ```
+- **No tray icon:** enable the *AppIndicator and KStatusNotifierItem Support* extension, then run `wallpaper-location-tray` or turn on **Show tray icon** in the app.
 - **"Change automatically" is greyed out:** the timer isn't installed. Run `./install.sh`.
 
 ## License

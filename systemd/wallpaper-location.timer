@@ -1,0 +1,9 @@
+[Unit]
+Description=Check location for wallpaper changes
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

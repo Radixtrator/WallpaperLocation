@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Location
+Comment=Change your wallpaper based on where you are
+Exec=wallpaper-location-gui
+Icon=preferences-desktop-wallpaper
+Categories=GNOME;GTK;Utility;Settings;
+Keywords=background;wallpaper;location;wifi;
+StartupNotify=true
+X-Geoclue-Reason=Pick a wallpaper for where you are

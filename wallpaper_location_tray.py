@@ -99,11 +99,12 @@ class Tray(Gtk.Application):
         self.changed_item = item("Last changed: unknown", sensitive=False)
         self.reveal_item = item("Show in Files", self.reveal_current)
         self.next_item = item("Next Wallpaper", lambda: self.run_task(core.next_wallpaper, self.cfg))
+        self.trash_item = item("Move to Trash", self.trash_current)
         self.pause_item = item("Pause Slideshow", cls=Gtk.CheckMenuItem)
         self.pause_item.connect("toggled", self.on_pause_toggled)
         self.place_item = item("Place")
         for it in (self.current_item, self.changed_item, self.reveal_item, Gtk.SeparatorMenuItem(),
-                   self.next_item, self.pause_item, Gtk.SeparatorMenuItem(),
+                   self.next_item, self.trash_item, self.pause_item, Gtk.SeparatorMenuItem(),
                    self.place_item, Gtk.SeparatorMenuItem(),
                    item("Settings…", self.open_settings), item("Quit Tray Icon", self.quit)):
             menu.append(it)
@@ -148,6 +149,11 @@ class Tray(Gtk.Application):
         self.reveal_item.set_sensitive(current is not None)
         folder = rule is not None and Path(rule["wallpaper"]).expanduser().is_dir()
         self.next_item.set_sensitive(folder and not self.busy)
+        in_folder = folder and current is not None and \
+            current.is_relative_to(Path(rule["wallpaper"]).expanduser().resolve())
+        self.trash_item.set_sensitive(bool(in_folder) and not self.busy)
+        self.trash_item.set_label(menu_label(
+            f"Move {current.name} to Trash" if in_folder else "Move to Trash", limit=60))
         self.pause_item.set_sensitive(slideshow and not self.busy)
         self.pause_item.set_label(menu_label(
             "Pause Slideshow" if slideshow or not rule
@@ -185,14 +191,39 @@ class Tray(Gtk.Application):
             GLib.idle_add(self._done, err)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _done(self, err):
+    def _done(self, err, title="Couldn't change the wallpaper"):
         self.busy = False
         self.refresh()
         if err:
-            note = Gio.Notification.new("Couldn't change the wallpaper")
-            note.set_body(str(err))
-            self.send_notification(None, note)
+            self.notify(title, str(err))
         return False
+
+    def notify(self, title, body):
+        note = Gio.Notification.new(title)
+        note.set_body(body)
+        self.send_notification(None, note)
+
+    def trash_current(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.refresh()
+
+        def worker():
+            try:
+                trashed, _now = core.trash_current(self.cfg)
+                err = None
+            except Exception as e:
+                trashed, err = None, e
+            GLib.idle_add(finished, trashed, err)
+
+        def finished(trashed, err):
+            self._done(err, "Couldn't move the image to the Trash")
+            if trashed:
+                self.notify(f"Moved {trashed.name} to the Trash",
+                            "Restore it from Trash in Files if you change your mind.")
+            return False
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_pause_toggled(self, it):
         if not self.updating:

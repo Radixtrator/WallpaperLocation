@@ -10,9 +10,13 @@ The first rule in the config that matches wins. See config.example.toml.
 """
 
 import argparse
+import errno
+import itertools
 import json
 import math
+import os
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,6 +32,7 @@ APP_ID = "wallpaper-location"
 DESKTOP_ID = "io.github.radixtrator.WallpaperLocation"
 CONFIG_PATH = Path.home() / ".config" / APP_ID / "config.toml"
 STATE_PATH = Path.home() / ".local" / "state" / APP_ID / "state.json"
+TRASH_DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "Trash"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", ".jxl", ".avif"}
 TRANSITION_SECS = 2.0
 MIN_SLIDE_SECS = 5
@@ -418,6 +423,74 @@ def set_paused(paused):
     play(state, _rotate(show["order"], i), show["secs"], changed=False)
 
 
+def move_to_trash(path):
+    """Move a file to the user's Trash, so it can be restored from Files.
+
+    Follows the freedesktop.org Trash spec. Always uses the home Trash: files
+    on other filesystems (like a cloud-sync folder) are copied across and only
+    then removed, since `gio trash` refuses many of those mounts.
+    """
+    path = Path(path).resolve()
+    files, info = TRASH_DIR / "files", TRASH_DIR / "info"
+    files.mkdir(parents=True, exist_ok=True)
+    info.mkdir(parents=True, exist_ok=True)
+    for n in itertools.count(1):
+        name = path.name if n == 1 else f"{path.stem} ({n}){path.suffix}"
+        if (files / name).exists():
+            continue
+        try:  # creating the .trashinfo exclusively reserves the name
+            fd = os.open(info / f"{name}.trashinfo", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            continue
+    infofile, dest = info / f"{name}.trashinfo", files / name
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(str(path))}\n"
+                f"DeletionDate={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    try:
+        try:
+            os.rename(path, dest)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            shutil.copy2(path, dest)
+            path.unlink()  # if this fails, the original is still there and the copy is undone
+    except BaseException:
+        if path.exists():
+            dest.unlink(missing_ok=True)
+        infofile.unlink(missing_ok=True)
+        raise
+    return dest
+
+
+def trash_current(cfg):
+    """Move the image on screen to the Trash and show the next one.
+
+    Only images from the current place's folder can be trashed. Returns
+    (trashed image, image now showing or None).
+    """
+    state = load_state()
+    rule = find_rule(cfg, state.get("rule")) if _is_ours(state) else None
+    current = current_wallpaper(state)
+    folder = Path(rule["wallpaper"]).expanduser().resolve() if rule else None
+    if not current or not folder or not folder.is_dir() or not current.is_relative_to(folder):
+        raise ValueError("only images from the current place's folder can be moved to the Trash")
+    i = current_slide(state)  # where the slideshow is, before the file goes
+    move_to_trash(current)
+    if i is None:
+        return current, next_wallpaper(cfg)
+    show = state["slideshow"]
+    order = [p for p in _rotate(show["order"], i) if Path(p) != current]
+    # Taking an image out can leave the same image twice in a row; drop the repeat.
+    order = [p for k, p in enumerate(order) if k == 0 or p != order[k - 1]]
+    if len(order) > 1 and order[-1] == order[0]:
+        order.pop()
+    if not order:
+        return current, None
+    play(state, order, show["secs"])
+    return current, Path(order[0])
+
+
 def find_rule(cfg, name):
     if not name:
         return None
@@ -616,10 +689,11 @@ def watch(config_path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="?", default="run",
-                    choices=["run", "where", "shuffle", "next", "pause", "resume", "watch"],
+                    choices=["run", "where", "shuffle", "next", "pause", "resume", "trash", "watch"],
                     help="run: apply wallpaper (default); where: just print detected location; "
                          "shuffle: re-apply with a freshly shuffled slideshow; "
                          "next: skip to the next image; pause/resume: freeze or continue the slideshow; "
+                         "trash: move the image on screen to the Trash and show the next; "
                          "watch: stay running and check after waking up or changing networks")
     ap.add_argument("-c", "--config", type=Path, default=CONFIG_PATH)
     ap.add_argument("-n", "--dry-run", action="store_true", help="don't change the wallpaper")
@@ -643,6 +717,13 @@ def main():
         return
     if args.command in ("pause", "resume"):
         set_paused(args.command == "pause")
+        return
+    if args.command == "trash":
+        try:
+            trashed, now = trash_current(cfg)
+        except ValueError as e:
+            sys.exit(str(e))
+        print(f"moved {trashed} to the Trash" + (f"; now showing {now}" if now else ""))
         return
     if args.command == "watch":
         watch(args.config)

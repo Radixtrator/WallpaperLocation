@@ -15,7 +15,7 @@ A small GTK4 / libadwaita app plus a background timer. It's written in Python, u
 - **An image or a folder per place.** With a folder, a random image is picked from it, including its subfolders.
 - **Slideshows.** Turn a folder into a slideshow and choose how long each image stays, in seconds, minutes or hours. Shuffle shows every image once per round, in a new random order each round. **Shuffle Slideshow Now** makes a new order straight away. GNOME plays the slideshow itself with a cross-fade, so it keeps going between location checks.
 - **First match wins.** Reorder places to set priority, and set a fallback wallpaper for everywhere else, or leave it unset to keep your current wallpaper.
-- **Tray icon** with *Next Wallpaper*, when the wallpaper last changed, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
+- **Tray icon** with *Next Wallpaper*, *Move to Trash* for weeding out images you don't want, when the wallpaper last changed, *Pause Slideshow*, a link to the image on screen, and a *Place* menu to pick a place by hand, overriding location detection until you switch back to *Automatic*.
 - **Runs in the background.** It checks a few seconds after you wake the laptop or join a different network, and every 10 minutes and at login as a backup. It only changes the wallpaper when you've moved to a different place, so open the lid somewhere new and the right wallpaper is usually up by the time you've unlocked.
 - **One-click helpers** fill in your current Wi-Fi, city or coordinates while you edit a place.
 - **CLI too.** `wallpaper-location where` / `run` work without the GUI.
@@ -77,6 +77,7 @@ Open **Wallpaper Location**, click **+** to add a place, pick a wallpaper and ch
 | **Current: *name*** | Opens the image on screen. **Show in Files** opens its folder. |
 | **Last changed** | Date and time the image on screen last changed, including slideshow changes GNOME made on its own. |
 | **Next Wallpaper** | Skips to the next image in a slideshow, or picks another random image from a folder. Middle-clicking the icon does the same. |
+| **Move *name* to Trash** | Moves the image on screen to your Trash and shows the next one. Works only for places that use a folder. The file goes to the normal Trash, even from another drive or a cloud-sync folder (copied across, then deleted), so you can restore it from **Files › Trash**. If the folder syncs to the cloud, the file is removed there too. |
 | **Pause Slideshow** | Keeps the current image on screen. Unpausing carries on from that image. The pause stays on when you move to another place, until you turn it off. |
 | **Place** | *Automatic* chooses by location. Choosing a place keeps it, and the background timer, on that place wherever you are, until you switch back to *Automatic*. The app shows this too and has **Pick by Location Again**. |
 
@@ -89,6 +90,7 @@ wallpaper-location run --force    # apply even if it didn't (re-rolls folder pic
 wallpaper-location run --dry-run  # show what would happen
 wallpaper-location shuffle        # re-apply with a freshly shuffled slideshow order
 wallpaper-location next           # skip to the next image
+wallpaper-location trash          # move the image on screen to the Trash, show the next
 wallpaper-location pause          # freeze the slideshow (resume to continue)
 wallpaper-location watch          # stay running; check after waking up or changing networks
 ```

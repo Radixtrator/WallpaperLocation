@@ -453,7 +453,13 @@ def move_to_trash(path):
         except OSError as e:
             if e.errno != errno.EXDEV:
                 raise
-            shutil.copy2(path, dest)
+            # Not copy2: it also copies extended attributes, and cloud-sync
+            # folders can carry ones too big for the target (Proton Drive's
+            # 50 KB thumbnails make btrfs fail with "No space left on device").
+            shutil.copyfile(path, dest)
+            st = path.stat()
+            os.chmod(dest, st.st_mode & 0o7777)
+            os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))
             path.unlink()  # if this fails, the original is still there and the copy is undone
     except BaseException:
         if path.exists():
